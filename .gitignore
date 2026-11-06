@@ -1,0 +1,11 @@
+# 运行产物（只忽略中间文件，保留推送用的图片）
+state/*
+!state/dlt-*.png
+__pycache__/
+*.pyc
+
+# 本地凭证（切勿提交）
+.env
+credentials.json
+wxpusher_spt.txt
+pushplus_token.txt

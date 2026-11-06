@@ -1,0 +1,101 @@
+name: 大乐透号码推送
+
+on:
+  schedule:
+    # 每周一、三、六 北京时间 12:00（UTC 04:00）
+    - cron: "0 4 * * 1,3,6"
+  # 支持在 Actions 页面手动触发，便于首次验证
+  workflow_dispatch:
+
+permissions:
+  contents: write        # 需要把图片提交回仓库，才能拿到公网外链
+
+concurrency:
+  group: dlt-push
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Shanghai
+      WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
+      DLT_TITLE: 超级大乐透 · 机选 5 注
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装中文字体
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-noto-cjk
+
+      - name: 缓存历史开奖数据
+        uses: actions/cache@v4
+        with:
+          path: state/history.json
+          key: dlt-history-${{ github.run_id }}
+          restore-keys: |
+            dlt-history-
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 生成号码图片
+        run: python dlt_card.py 5
+
+      - name: 上传图片到仓库并生成公网链接
+        id: publish
+        run: |
+          set -e
+          STAMP=$(date +%Y%m%d-%H%M)
+          NAME="state/dlt-${STAMP}.png"
+          cp state/latest.png "$NAME"
+          # 只保留最近 6 张，避免仓库无限膨胀
+          ls -1t state/dlt-*.png 2>/dev/null | tail -n +7 | xargs -r git rm --cached -f >/dev/null 2>&1 || true
+          ls -1t state/dlt-*.png 2>/dev/null | tail -n +7 | xargs -r rm -f || true
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A state/
+          git commit -m "chore: 号码图片 ${STAMP}" || echo "无变更"
+          git push
+          SHA=$(git rev-parse HEAD)
+          BASE="https://cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@${SHA}"
+          echo "candidate=${BASE}/${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: 等待图片外链生效
+        id: cdn
+        run: |
+          URL="${{ steps.publish.outputs.candidate }}"
+          for i in $(seq 1 15); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" -L --max-time 10 "$URL" || true)
+            echo "第 ${i} 次探测：HTTP ${CODE}"
+            if [ "$CODE" = "200" ]; then
+              echo "image_url=${URL}" >> "$GITHUB_OUTPUT"
+              echo "外链可用：$URL"
+              exit 0
+            fi
+            sleep 4
+          done
+          echo "外链暂不可用，本次退化为文字表格推送"
+
+      - name: 推送到微信
+        run: python dlt_wxpusher.py state/latest.png "基于历史开奖统计"
+        env:
+          DLT_IMAGE_URL: ${{ steps.cdn.outputs.image_url }}
+
+      - name: 存档图片
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlt-latest
+          path: state/latest.png
+          if-no-files-found: ignore
+          retention-days: 14
