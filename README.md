@@ -1,6 +1,6 @@
 # 大乐透机选号码 · 云端定时推送
 
-每周一、三、六 12:00（北京时间）在 GitHub Actions 上运行，生成 5 注大乐透号码卡片，
+每周一、三、六 12:00（北京时间，遇调度延迟自动补推）在 GitHub Actions 上运行，生成 5 注大乐透号码卡片，
 通过 **Server酱** 推到个人微信。**不需要电脑开机**。
 
 ## 它怎么工作
@@ -49,20 +49,30 @@ git push -u origin main
 仓库 → Actions → 左侧「大乐透号码推送」→ Run workflow → 绿色按钮。
 约 1 分钟后微信收到消息；没收到就点开这次运行看哪一步红了。
 
-## 准点触发（可选，解决 GitHub 定时延迟）
+## 准点推送怎么保证（无需第三方账号）
 
-GitHub 免费版的 `schedule` 实测可能延迟数小时（本项目 6 次运行实际落在 19:15–20:43）。
-要准点，用外部定时器触发：
+GitHub 免费版的 `schedule` 实测会延迟数小时（本项目 6 次运行都落在北京 19:15–20:43）。
+工作流用「双时段 cron + 时间窗口守卫」来抵消：
 
-1. 建一个 **Fine-grained PAT**：GitHub → Settings → Developer settings →
-   Personal access tokens → Fine-grained tokens → 只勾选本仓库，
-   权限 `Actions: Read and write`，有效期自定
-2. 打开 <https://cron-job.org>（免费注册），新建 cronjob：
-   - URL：`https://api.github.com/repos/<owner>/<repo>/actions/workflows/dlt-push.yml/dispatches`
-   - 方法：`POST`，请求体：`{"ref":"main"}`
-   - Header：`Authorization: Bearer <你的 PAT>`、`Accept: application/vnd.github+json`
-   - 计划：每周一、三、六 12:00（时区选 Asia/Shanghai）
-3. 原生 cron 保留作兜底；`state/last_push.json` 保证不会重复推送
+```yaml
+- cron: "0 4 * * 1,3,6"    # 北京 12:00：不延迟时准点推送
+- cron: "0 20 * * 0,2,5"   # 北京 04:00：若延迟 7~8 小时，正好落在北京 11~12 点
+```
+
+守卫逻辑（`判断是否需要推送` 步骤）：
+
+| 北京当前时间 | 行为 |
+|---|---|
+| 10:00–14:00 | 正常推送（准点窗口） |
+| 14:00–22:00 | 补推（定时被延迟了，晚到但不错过） |
+| 22:00–10:00 | 跳过（避免凌晨发消息） |
+| 当天已推送 | 跳过（`state/last_push.json` 去重） |
+| 手动/外部触发 | 直接推送，不受限制 |
+
+如果将来 GitHub 的延迟消失，`0 4` 那条会准时在 12:00 触发，`0 20` 那条则落在凌晨被守卫跳过，两者不会重复。
+
+想用外部定时器做到分钟级准点，工作流也支持 `repository_dispatch`（type: `dlt-push`），
+用 cron-job.org 之类的服务带 PAT 调用即可。
 
 ## 常见问题
 
