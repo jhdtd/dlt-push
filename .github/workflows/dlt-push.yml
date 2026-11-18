@@ -2,9 +2,12 @@ name: 大乐透号码推送
 
 on:
   schedule:
-    # 每周一、三、六 北京时间 12:00（UTC 04:00）；GitHub 免费版可能延迟，外部定时器另见 README
+    # 定时任务设两个时段，配合「时间窗口守卫」抵消 GitHub 免费版的调度延迟：
+    #  A. 周一/三/六 北京 12:00（UTC 04:00）—— 不延迟时准点推送
+    #  B. 周日/二/五 UTC 20:00（= 周一/三/六 北京 04:00）—— 若延迟 7~8 小时，正好落在北京 11~12 点
     - cron: "0 4 * * 1,3,6"
-  # 支持在 Actions 页面手动触发（手动触发不受「今天已推送」限制，便于测试）
+    - cron: "0 20 * * 0,2,5"
+  # 支持在 Actions 页面手动触发（手动触发不受时间窗口与去重限制）
   workflow_dispatch:
   # 供外部定时器（cron-job.org 等）精确触发
   repository_dispatch:
@@ -52,21 +55,41 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 判断今天是否已推送
+      - name: 判断是否需要推送
         id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          TODAY=$(date +%F)
-          LAST=""
-          if [ -f state/last_push.json ]; then
-            LAST=$(python -c "import json;print(json.load(open('state/last_push.json')).get('date',''))" 2>/dev/null || echo "")
-          fi
-          echo "今天=$TODAY 上次=$LAST 触发方式=${{ github.event_name }}"
-          if [ "$LAST" = "$TODAY" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "今天已推送过，本次跳过（避免重复触发导致重复消息）"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          python - <<'PY'
+          import datetime, json, os, pathlib
+
+          tz = datetime.timezone(datetime.timedelta(hours=8))
+          now = datetime.datetime.now(tz)
+          today, hour = now.strftime("%Y-%m-%d"), now.hour
+          last = ""
+          p = pathlib.Path("state/last_push.json")
+          if p.exists():
+              try:
+                  last = json.loads(p.read_text(encoding="utf-8")).get("date", "")
+              except Exception:
+                  last = ""
+
+          event = os.environ.get("EVENT_NAME", "")
+          if event in ("workflow_dispatch", "repository_dispatch"):
+              skip, reason = False, "手动/外部触发，直接推送"
+          elif last == today:
+              skip, reason = True, "今天已推送过（%s），跳过" % last
+          elif 10 <= hour <= 14:
+              skip, reason = False, "准点窗口（%02d 点）" % hour
+          elif 14 < hour <= 22:
+              skip, reason = False, "补推窗口（%02d 点，定时被延迟）" % hour
+          else:
+              skip, reason = True, "%02d 点属非常规时段（可能是提前/严重延迟），跳过" % hour
+
+          print("北京时间 %s | 上次推送：%s | 判定：%s" % (now.strftime("%F %H:%M"), last or "无", reason))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write("skip=%s\n" % ("true" if skip else "false"))
+          PY
 
       - name: 生成号码图片
         if: steps.guard.outputs.skip != 'true'
