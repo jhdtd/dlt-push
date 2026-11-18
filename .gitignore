@@ -1,6 +1,7 @@
-# 运行产物（只忽略中间文件，保留推送用的图片）
+# 运行产物（只忽略中间文件，保留推送用的图片与去重标记）
 state/*
 !state/dlt-*.png
+!state/last_push.json
 __pycache__/
 *.pyc
 
